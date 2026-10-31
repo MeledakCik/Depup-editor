@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { FileVideo2, Image, Music2, Plus, Upload, X, WandSparkles } from 'lucide-react';
 import type { Engine } from '@/lib/engine/fabric-engine';
-import { MOTION_PRESETS } from '@/lib/motion-graphics';
+import { MOTION_PRESETS, type MotionEnter, type MotionPosition } from '@/lib/motion-graphics';
 import { useStore } from '@/lib/store';
 
 export type MediaAsset = { id: string; name: string; url: string; kind: 'video' | 'image' | 'audio'; file: File };
@@ -18,6 +18,9 @@ const fileDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
 export default function VideoMediaPanel({ selected, onPreview, eng }: Props) {
   const [tab, setTab] = useState<Tab>('Media'), [items, setItems] = useState<MediaAsset[]>([]), [message, setMessage] = useState('');
   const [motionId, setMotionId] = useState(MOTION_PRESETS[0].id), [motionTitle, setMotionTitle] = useState(MOTION_PRESETS[0].title), [motionSubtitle, setMotionSubtitle] = useState(MOTION_PRESETS[0].subtitle);
+  const [motionDuration, setMotionDuration] = useState(MOTION_PRESETS[0].duration / 24);
+  const [motionEnter, setMotionEnter] = useState<MotionEnter>(MOTION_PRESETS[0].enter);
+  const [motionPosition, setMotionPosition] = useState<MotionPosition>(MOTION_PRESETS[0].position);
   const currentFrame = useStore((s) => s.currentFrame);
   const input = useRef<HTMLInputElement>(null), itemsRef = useRef<MediaAsset[]>([]);
   itemsRef.current = items;
@@ -49,11 +52,12 @@ export default function VideoMediaPanel({ selected, onPreview, eng }: Props) {
   const chooseMotion = (presetId: string) => {
     const preset = MOTION_PRESETS.find((item) => item.id === presetId); if (!preset) return;
     setMotionId(preset.id); setMotionTitle(preset.title); setMotionSubtitle(preset.subtitle);
+    setMotionDuration(preset.duration / 24); setMotionEnter(preset.enter); setMotionPosition(preset.position);
   };
   const addMotion = () => {
     const engine = eng(); if (!engine) return setMessage('Canvas belum siap.');
     const preset = MOTION_PRESETS.find((item) => item.id === motionId); if (!preset) return;
-    const id = engine.addMotionGraphic(preset.id, currentFrame, preset.duration, { title: motionTitle, subtitle: motionSubtitle });
+    const id = engine.addMotionGraphic(preset.id, currentFrame, Math.round(motionDuration * 24), { title: motionTitle, subtitle: motionSubtitle, enter: motionEnter, position: motionPosition });
     setMessage(id ? 'Motion graphic ditambahkan ke track Overlay.' : 'Template tidak dapat dimuat.');
   };
 
@@ -94,8 +98,20 @@ export default function VideoMediaPanel({ selected, onPreview, eng }: Props) {
             <span className="block text-[10px] text-slate-400">{preset.description}</span>
             <span className="mt-2 block truncate rounded px-2 py-1 text-[10px] font-semibold" style={{ backgroundColor: preset.fill, color: preset.text, borderLeft: `3px solid ${preset.accent}` }}>{preset.title}</span>
           </button>)}
-          <label className="block text-xs text-slate-400">Judul<input className="btn mt-1 w-full" value={motionTitle} onChange={(e) => setMotionTitle(e.target.value)} /></label>
-          <label className="block text-xs text-slate-400">Subjudul<input className="btn mt-1 w-full" value={motionSubtitle} onChange={(e) => setMotionSubtitle(e.target.value)} /></label>
+          <div className="rounded-md border border-[#343941] bg-[#191c21] p-2.5">
+            <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-300">Sesuaikan motion</div>
+            <label className="mb-2 block text-xs text-slate-400">Judul<input className="btn mt-1 w-full" value={motionTitle} onChange={(e) => setMotionTitle(e.target.value)} /></label>
+            <label className="mb-2 block text-xs text-slate-400">Subjudul<input className="btn mt-1 w-full" value={motionSubtitle} onChange={(e) => setMotionSubtitle(e.target.value)} /></label>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="block text-xs text-slate-400">Posisi<select className="btn mt-1 w-full" value={motionPosition} onChange={(e) => setMotionPosition(e.target.value as MotionPosition)}>
+                <option value="lower-left">Bawah kiri</option><option value="lower-center">Bawah tengah</option><option value="lower-right">Bawah kanan</option><option value="center">Tengah</option><option value="top-center">Atas tengah</option>
+              </select></label>
+              <label className="block text-xs text-slate-400">Masuk<select className="btn mt-1 w-full" value={motionEnter} onChange={(e) => setMotionEnter(e.target.value as MotionEnter)}>
+                <option value="left">Dari kiri</option><option value="right">Dari kanan</option><option value="top">Dari atas</option><option value="bottom">Dari bawah</option><option value="scale">Zoom</option>
+              </select></label>
+            </div>
+            <label className="mt-2 block text-xs text-slate-400">Durasi: {motionDuration.toFixed(2)} dtk<input className="mt-1 w-full accent-blue-400" type="range" min={1} max={10} step={0.25} value={motionDuration} onChange={(e) => setMotionDuration(+e.target.value)} /></label>
+          </div>
           <button className="btn flex w-full items-center justify-center gap-2 border-blue-500/50 bg-blue-600/20" onClick={addMotion}><Plus size={14} /> Tambahkan ke timeline</button>
         </div>}
         {message && <p role="alert" className="mt-2 text-xs text-orange-300">{message}</p>}

@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { Eye, EyeOff, LockKeyhole, Unlock, Layers3, Undo2, Redo2, Save, FolderOpen } from 'lucide-react';
-import { useStore, type ClipAnimation, type ClipTransform, type Tool, type Track } from '@/lib/store';
+import { useStore, type ClipAnimation, type ClipEasing, type ClipTransform, type Tool, type Track } from '@/lib/store';
 import type { Engine } from '@/lib/engine/fabric-engine';
 import { packDepup, saveDepup, openDepup, emptyProject, unpackDepup } from '@/lib/engine/depup-format';
 import VideoMediaPanel, { type MediaAsset } from './VideoMediaPanel';
@@ -16,7 +16,8 @@ const dl = (href: string, name: string) => {
   if (href.startsWith('blob:')) window.setTimeout(() => URL.revokeObjectURL(href), 30_000);
 };
 const errorText = (e: unknown) => e instanceof Error ? e.message : 'Terjadi kesalahan yang tidak diketahui.';
-const animations: ClipAnimation[] = ['none', 'fade', 'slide-up', 'slide-left', 'zoom'];
+const animations: ClipAnimation[] = ['none', 'fade', 'slide-up', 'slide-down', 'slide-left', 'slide-right', 'zoom', 'rotate', 'pop'];
+const easings: ClipEasing[] = ['linear', 'ease-in', 'ease-out', 'ease-in-out', 'back'];
 const normalizeTracks = (value: unknown): Track[] => {
   if (!Array.isArray(value)) return [];
   const kinds = ['video', 'audio', 'text', 'overlay'] as const;
@@ -33,6 +34,14 @@ const normalizeTracks = (value: unknown): Track[] => {
       const baseTransform = rawBase && baseKeys.every((key) => Number.isFinite(Number(rawBase[key])))
         ? Object.fromEntries(baseKeys.map((key) => [key, Number(rawBase[key])])) as ClipTransform
         : undefined;
+      const keyframes = Array.isArray(clip.keyframes) ? clip.keyframes.flatMap((rawKeyframe) => {
+        if (!rawKeyframe || typeof rawKeyframe !== 'object') return [];
+        const keyframe = rawKeyframe as Record<string, unknown>;
+        const frame = Number(keyframe.frame);
+        if (!Number.isFinite(frame) || frame < 0 || !baseKeys.every((key) => Number.isFinite(Number(keyframe[key])))) return [];
+        const transform = Object.fromEntries(baseKeys.map((key) => [key, Number(keyframe[key])])) as ClipTransform;
+        return [{ frame: Math.round(frame), ...transform }];
+      }).sort((a, b) => a.frame - b.frame) : undefined;
       return [{
         id: String(clip.id ?? `${index}-${clipIndex}`), start: Math.max(0, start), len,
         label: String(clip.label ?? `Klip ${clipIndex + 1}`),
@@ -41,7 +50,9 @@ const normalizeTracks = (value: unknown): Track[] => {
         ...(animations.includes(clip.inAnimation as ClipAnimation) ? { inAnimation: clip.inAnimation as ClipAnimation } : {}),
         ...(animations.includes(clip.outAnimation as ClipAnimation) ? { outAnimation: clip.outAnimation as ClipAnimation } : {}),
         ...(Number.isFinite(Number(clip.transitionFrames)) ? { transitionFrames: Math.max(1, Number(clip.transitionFrames)) } : {}),
+        ...(easings.includes(clip.easing as ClipEasing) ? { easing: clip.easing as ClipEasing } : {}),
         ...(baseTransform ? { baseTransform } : {}),
+        ...(keyframes?.length ? { keyframes } : {}),
       }];
     }) : [];
     return [{ id: String(row.id ?? `track-${index}`), kind: kind as Track['kind'], clips }];

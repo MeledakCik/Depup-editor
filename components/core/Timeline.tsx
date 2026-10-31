@@ -7,6 +7,10 @@ import type { Engine } from '@/lib/engine/fabric-engine';
 const color = { video: '#22d3ee', audio: '#a855f7', text: '#3b82f6', overlay: '#f97316' } as const;
 const SNAP = 6, FPS = 24;
 type Kind = keyof typeof color;
+const timecode = (frame: number) => {
+  const totalSeconds = Math.floor(frame / FPS), minutes = Math.floor(totalSeconds / 60), seconds = totalSeconds % 60, frames = frame % FPS;
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}:${String(frames).padStart(2, '0')}`;
+};
 
 export default function Timeline({ eng }: { eng: () => Engine | null }) {
   const tracks = useStore((s) => s.tracks), activeClipId = useStore((s) => s.activeClipId), updateClip = useStore((s) => s.updateClip), splitAt = useStore((s) => s.splitAt), removeClip = useStore((s) => s.removeClip);
@@ -79,7 +83,7 @@ export default function Timeline({ eng }: { eng: () => Engine | null }) {
         <button className="btn inline-flex items-center gap-1" title="Maju satu frame" onClick={() => set({ currentFrame: frame + 1 })}><SkipForward size={14} /></button>
         <button className="btn inline-flex items-center gap-1" onClick={() => splitAt(frame)}><Scissors size={14} /> Pisah di playhead</button>
         {(sel || activeClipId) && <button className="btn inline-flex items-center gap-1" title="Hapus klip terpilih" onClick={deleteSelectedClip}><Trash2 size={14} /></button>}
-        <span className="rounded bg-black/30 px-2 py-1 font-mono text-cyan-300">{(frame / FPS).toFixed(2)}s</span>
+        <span className="rounded bg-black/30 px-2 py-1 font-mono text-cyan-300" title="Timecode: menit:detik:frame">{timecode(frame)}</span>
         <span className="ml-auto flex items-center gap-1">
           <select className="btn bg-panel" value={kind} onChange={(e) => setKind(e.target.value as Kind)} aria-label="Jenis klip baru">
             {(Object.keys(color) as Kind[]).map((k) => <option key={k} value={k}>{k}</option>)}
@@ -97,19 +101,25 @@ export default function Timeline({ eng }: { eng: () => Engine | null }) {
           <div className="mb-1 flex h-6 items-end border-b border-slate-800 text-[10px] text-slate-500">
             <div className="w-16 shrink-0">WAKTU</div>
             <div ref={ruler} className="relative h-full flex-1 touch-none" onPointerDown={(e) => { scrubbing.current = true; (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); setFrameFromPointer(e); }}>
-              {Array.from({ length: Math.ceil(duration / (FPS * 2)) + 1 }, (_, i) => <span key={i} className="absolute bottom-0 border-l border-slate-700 pl-1" style={{ left: i * FPS * 2 * px }}>{i * 2}s</span>)}
+              {Array.from({ length: Math.ceil(duration / FPS) + 1 }, (_, i) => <span key={i} className={`absolute bottom-0 border-l pl-1 ${i % 5 === 0 ? 'h-full border-slate-600 text-slate-400' : 'h-2 border-slate-700 text-transparent'}`} style={{ left: i * FPS * px }}>{i % 5 === 0 ? `${Math.floor(i / 60)}:${String(i % 60).padStart(2, '0')}` : '·'}</span>)}
             </div>
           </div>
           {tracks.map((t) => (
             <div key={t.id} className="mb-1 flex h-9 items-center">
-              <div className="w-16 shrink-0 capitalize text-slate-400">{t.kind}</div>
+              <div className="w-16 shrink-0 text-[10px] font-semibold uppercase tracking-wide" style={{ color: color[t.kind] }}>{t.kind}<span className="ml-1 font-normal text-slate-600">{t.id}</span></div>
               <div className="relative h-8 flex-1 touch-none rounded bg-black/30" onPointerDown={(e) => { scrubbing.current = true; (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); setFrameFromPointer(e); }}>
                 {t.clips.map((c) => (
-                  <div key={c.id} onPointerDown={(e) => down(e, c, 'move')}
+                  <div key={c.id} onPointerDown={(e) => down(e, c, 'move')} onDoubleClick={() => set({ currentFrame: c.start, playing: false })}
                     className="absolute top-0 h-8 cursor-grab select-none truncate rounded px-3 leading-8 touch-none"
-                    style={{ left: c.start * px, width: Math.max(24, c.len * px), background: color[t.kind] + ((activeClipId ?? sel) === c.id ? '66' : '33'), border: `1px solid ${color[t.kind]}`, boxShadow: (activeClipId ?? sel) === c.id ? `0 0 0 1px ${color[t.kind]}` : undefined }}>
+                    title={`${c.label} · mulai ${(c.start / FPS).toFixed(2)}s · durasi ${(c.len / FPS).toFixed(2)}s · klik dua kali untuk ke awal`}
+                    style={{ left: c.start * px, width: Math.max(24, c.len * px), background: color[t.kind] + ((activeClipId ?? sel) === c.id ? '55' : '2b'), border: `1px solid ${color[t.kind]}`, boxShadow: (activeClipId ?? sel) === c.id ? `0 0 0 1px ${color[t.kind]}` : undefined }}>
+                    {(c.objectId || c.motionTemplate) && <>
+                      <span className="pointer-events-none absolute inset-y-0 left-0 z-[1] bg-white/10" style={{ width: Math.min(c.len * px / 2, (c.motionTemplate ? c.len * 0.16 : c.transitionFrames ?? 12) * px) }} />
+                      <span className="pointer-events-none absolute inset-y-0 right-0 z-[1] bg-black/15" style={{ width: Math.min(c.len * px / 2, (c.motionTemplate ? c.len * 0.18 : c.transitionFrames ?? 12) * px) }} />
+                    </>}
                     <i onPointerDown={(e) => down(e, c, 'l')} className="absolute inset-y-0 left-0 z-10 w-2 cursor-ew-resize" aria-label="Trim awal" />
-                    {c.label}
+                    <span className="relative z-[2]">{c.label}<span className="ml-2 text-[9px] opacity-60">{(c.len / FPS).toFixed(1)}s</span></span>
+                    {c.keyframes?.map((keyframe) => <span key={keyframe.frame} className="pointer-events-none absolute top-1/2 z-[3] h-2 w-2 -translate-x-1/2 -translate-y-1/2 rotate-45 border border-white bg-cyan-300 shadow" style={{ left: Math.max(8, Math.min(c.len * px - 8, keyframe.frame * px)) }} />)}
                     <i onPointerDown={(e) => down(e, c, 'r')} className="absolute inset-y-0 right-0 z-10 w-2 cursor-ew-resize" aria-label="Trim akhir" />
                   </div>
                 ))}

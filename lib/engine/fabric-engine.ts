@@ -1,8 +1,23 @@
 import { Canvas, FabricObject, Group, Rect, Ellipse, Triangle, Path, Point, IText, FabricImage, Shadow, filters, util } from 'fabric';
 import { anchorsToPath, type Anchor } from '@/lib/pen-tool';
 import { computeAutoLayout } from '@/lib/auto-layout';
-import { MOTION_PRESETS } from '@/lib/motion-graphics';
+import { MOTION_PRESETS, type MotionEnter, type MotionPosition } from '@/lib/motion-graphics';
+import type { ClipEasing, ClipTransform } from '@/lib/store';
 import { useStore } from '@/lib/store';
+
+const ease = (t: number, type: ClipEasing = 'ease-in-out') => {
+  const x = Math.max(0, Math.min(1, t));
+  if (type === 'linear') return x;
+  if (type === 'ease-in') return x * x * x;
+  if (type === 'ease-out') return 1 - (1 - x) ** 3;
+  if (type === 'back') { const c = 1.70158; return 1 + (c + 1) * (x - 1) ** 3 + c * (x - 1) ** 2; }
+  return x < 0.5 ? 4 * x * x * x : 1 - (-2 * x + 2) ** 3 / 2;
+};
+const mixTransform = (a: ClipTransform, b: ClipTransform, t: number): ClipTransform => ({
+  left: a.left + (b.left - a.left) * t, top: a.top + (b.top - a.top) * t,
+  scaleX: a.scaleX + (b.scaleX - a.scaleX) * t, scaleY: a.scaleY + (b.scaleY - a.scaleY) * t,
+  angle: a.angle + (b.angle - a.angle) * t, opacity: Math.max(0, Math.min(1, a.opacity + (b.opacity - a.opacity) * t)),
+});
 
 export function createEngine(el: HTMLCanvasElement, onView: (zoom: number, x: number, y: number) => void) {
   const c = new Canvas(el, { selection: true, preserveObjectStacking: true, backgroundColor: 'transparent' });
@@ -63,6 +78,7 @@ export function createEngine(el: HTMLCanvasElement, onView: (zoom: number, x: nu
   const syncTimelineBase = (object: any) => {
     const id = object?.data?.id; if (!id) return;
     const state = useStore.getState();
+    if (state.tracks.some((track) => track.clips.some((clip) => clip.objectId === id && clip.keyframes?.length))) return;
     const hasClip = state.tracks.some((track) => track.clips.some((clip) => clip.objectId === id && clip.baseTransform));
     if (!hasClip) return;
     const baseTransform = { left: object.left ?? 0, top: object.top ?? 0, scaleX: object.scaleX ?? 1, scaleY: object.scaleY ?? 1, angle: object.angle ?? 0, opacity: object.opacity ?? 1 };
@@ -235,8 +251,11 @@ export function createEngine(el: HTMLCanvasElement, onView: (zoom: number, x: nu
         if (phase <= a.phase) b = a;
         else if (phase >= b.phase) a = b;
         else { const index = motion.keyframes.findIndex((item: any) => item.phase > phase); a = motion.keyframes[index - 1]; b = motion.keyframes[index]; }
-        const amount = a === b ? 0 : (phase - a.phase) / (b.phase - a.phase);
-        (['left', 'top', 'scaleX', 'scaleY', 'opacity'] as const).forEach((key) => o.set(key, a[key] + (b[key] - a[key]) * amount));
+        const amount = a === b ? 0 : ease((phase - a.phase) / (b.phase - a.phase), clip.easing ?? 'ease-in-out');
+        (['left', 'top', 'scaleX', 'scaleY', 'opacity'] as const).forEach((key) => {
+          const value = a[key] + (b[key] - a[key]) * amount;
+          o.set(key, key === 'opacity' ? Math.max(0, Math.min(1, value)) : value);
+        });
         o.setCoords(); return;
       }
       const linked = clips.filter((clip) => clip.objectId === o.data?.id && !clip.motionTemplate);
@@ -246,28 +265,37 @@ export function createEngine(el: HTMLCanvasElement, onView: (zoom: number, x: nu
         if (!clip || !base) { o.set('opacity', 0); o.setCoords(); return; }
         const duration = Math.min(Math.max(1, clip.transitionFrames ?? 12), Math.max(1, Math.floor(clip.len / 2)));
         const elapsed = frame - clip.start;
+        const keyframes = [...(clip.keyframes ?? [])].sort((a, b) => a.frame - b.frame);
+        let pose: ClipTransform = base;
+        if (keyframes.length === 1) pose = keyframes[0];
+        else if (keyframes.length > 1) {
+          if (elapsed <= keyframes[0].frame) pose = keyframes[0];
+          else if (elapsed >= keyframes[keyframes.length - 1].frame) pose = keyframes[keyframes.length - 1];
+          else {
+            const index = keyframes.findIndex((keyframe) => keyframe.frame > elapsed);
+            const from = keyframes[index - 1], to = keyframes[index];
+            pose = mixTransform(from, to, ease((elapsed - from.frame) / Math.max(1, to.frame - from.frame), clip.easing));
+          }
+        }
         const variant = (type: string | undefined, direction: 'in' | 'out') => {
-          const target = { ...base };
+          const target = { ...pose };
           if (type === 'fade') target.opacity = 0;
           if (type === 'slide-up') { target.top += direction === 'in' ? 64 : -64; target.opacity = 0; }
+          if (type === 'slide-down') { target.top += direction === 'in' ? -64 : 64; target.opacity = 0; }
           if (type === 'slide-left') { target.left += direction === 'in' ? -80 : 80; target.opacity = 0; }
+          if (type === 'slide-right') { target.left += direction === 'in' ? 80 : -80; target.opacity = 0; }
           if (type === 'zoom') { target.scaleX *= 0.72; target.scaleY *= 0.72; target.opacity = 0; }
+          if (type === 'pop') { target.scaleX *= 0.55; target.scaleY *= 0.55; target.opacity = 0; }
+          if (type === 'rotate') { target.angle += direction === 'in' ? -16 : 16; target.scaleX *= 0.86; target.scaleY *= 0.86; target.opacity = 0; }
           return target;
         };
-        let from = base, to = base, amount = 1;
+        let from = pose, to = pose, amount = 1;
         if (clip.inAnimation && clip.inAnimation !== 'none' && elapsed < duration) {
-          from = variant(clip.inAnimation, 'in'); to = base; amount = Math.max(0, elapsed / duration);
+          from = variant(clip.inAnimation, 'in'); to = pose; amount = ease(Math.max(0, elapsed / duration), clip.easing);
         } else if (clip.outAnimation && clip.outAnimation !== 'none' && elapsed > clip.len - duration) {
-          from = base; to = variant(clip.outAnimation, 'out'); amount = Math.min(1, (elapsed - (clip.len - duration)) / duration);
+          from = pose; to = variant(clip.outAnimation, 'out'); amount = ease(Math.min(1, (elapsed - (clip.len - duration)) / duration), clip.easing);
         }
-        o.set({
-          left: from.left + (to.left - from.left) * amount,
-          top: from.top + (to.top - from.top) * amount,
-          scaleX: from.scaleX + (to.scaleX - from.scaleX) * amount,
-          scaleY: from.scaleY + (to.scaleY - from.scaleY) * amount,
-          angle: from.angle + (to.angle - from.angle) * amount,
-          opacity: from.opacity + (to.opacity - from.opacity) * amount,
-        });
+        o.set(mixTransform(from, to, amount));
         o.setCoords(); return;
       }
       const keyframes = o.data?.kf; if (!keyframes || keyframes.length < 2) return;
@@ -300,11 +328,14 @@ export function createEngine(el: HTMLCanvasElement, onView: (zoom: number, x: nu
       }) : null);
       o.setCoords(); c.requestRenderAll(); sync(); record(); return true;
     },
-    addMotionGraphic: (presetId: string, startFrame: number, durationFrames?: number, overrides?: { title?: string; subtitle?: string }) => {
+    addMotionGraphic: (presetId: string, startFrame: number, durationFrames?: number, overrides?: { title?: string; subtitle?: string; enter?: MotionEnter; position?: MotionPosition }) => {
       const preset = MOTION_PRESETS.find((item) => item.id === presetId); if (!preset) return false;
       const titleText = overrides?.title?.trim() || preset.title, subtitleText = overrides?.subtitle?.trim() || preset.subtitle;
-      const len = Math.max(24, durationFrames ?? preset.duration), finalLeft = Math.max(24, c.getWidth() / 2 - preset.width / 2);
-      const finalTop = Math.max(24, c.getHeight() * (preset.id === 'end-card' ? 0.5 : 0.72) - preset.height / 2);
+      const len = Math.max(24, durationFrames ?? preset.duration), position = overrides?.position ?? preset.position;
+      const finalLeft = position === 'lower-left' ? 32 : position === 'lower-right'
+        ? Math.max(24, c.getWidth() - preset.width - 32) : Math.max(24, c.getWidth() / 2 - preset.width / 2);
+      const finalTop = position === 'center' ? Math.max(24, c.getHeight() / 2 - preset.height / 2)
+        : position === 'top-center' ? 40 : Math.max(24, c.getHeight() - preset.height - 48);
       const background = new Rect({ left: 0, top: 0, width: preset.width, height: preset.height, fill: preset.fill, rx: preset.id === 'subscribe' ? 30 : 14, ry: preset.id === 'subscribe' ? 30 : 14 });
       const accent = new Rect({ left: 0, top: 0, width: 9, height: preset.height, fill: preset.accent, rx: 4, ry: 4 });
       const title = new IText(titleText, { left: 30, top: preset.height > 160 ? 40 : 20, fontSize: preset.id === 'title-reveal' ? 46 : 30, fill: preset.text, fontWeight: 'bold', fontFamily: 'Arial' });
@@ -313,10 +344,12 @@ export function createEngine(el: HTMLCanvasElement, onView: (zoom: number, x: nu
       group.set({ left: finalLeft, top: finalTop, originX: 'left', originY: 'top', opacity: 0 });
       group.setCoords();
       const objectId = `motion-${crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`}`;
-      const direction = preset.enter === 'left' ? -1 : preset.enter === 'right' ? 1 : 0;
-      const initialLeft = finalLeft + direction * 150, initialTop = finalTop + (preset.enter === 'bottom' ? 100 : 0);
-      const initialScale = preset.enter === 'scale' ? 0.72 : 0.92;
-      const exitLeft = finalLeft - direction * 80, exitTop = finalTop + (preset.enter === 'bottom' ? -60 : 0);
+      const enter = overrides?.enter ?? preset.enter;
+      const direction = enter === 'left' ? -1 : enter === 'right' ? 1 : 0;
+      const initialLeft = finalLeft + direction * 150;
+      const initialTop = finalTop + (enter === 'bottom' ? 100 : enter === 'top' ? -100 : 0);
+      const initialScale = enter === 'scale' ? 0.72 : 0.92;
+      const exitLeft = finalLeft - direction * 80, exitTop = finalTop + (enter === 'bottom' ? -60 : enter === 'top' ? 60 : 0);
       (group as any).data = { id: objectId, name: preset.name, motionTemplate: preset.id, motion: { templateId: preset.id, startFrame: Math.max(0, startFrame), durationFrames: len, keyframes: [
         { phase: 0, left: initialLeft, top: initialTop, scaleX: initialScale, scaleY: initialScale, opacity: 0 },
         { phase: 0.16, left: finalLeft, top: finalTop, scaleX: 1, scaleY: 1, opacity: 1 },
@@ -324,7 +357,7 @@ export function createEngine(el: HTMLCanvasElement, onView: (zoom: number, x: nu
         { phase: 1, left: exitLeft, top: exitTop, scaleX: 0.96, scaleY: 0.96, opacity: 0 },
       ] } };
       c.add(group); c.setActiveObject(group); sync();
-      useStore.getState().addMotionClip({ start: Math.max(0, startFrame), len, label: preset.name, objectId, motionTemplate: preset.id });
+      useStore.getState().addMotionClip({ start: Math.max(0, startFrame), len, label: preset.name, objectId, motionTemplate: preset.id, easing: 'ease-in-out' });
       applyAt(useStore.getState().currentFrame / 24); c.requestRenderAll(); return objectId;
     },
     removeObject: (id: string) => { const o: any = c.getObjects().find((item: any) => item.data?.id === id); if (!o) return false; c.remove(o); c.discardActiveObject(); sync(); return true; },
@@ -380,6 +413,18 @@ export function createEngine(el: HTMLCanvasElement, onView: (zoom: number, x: nu
     addTriangle: () => { const o = new Triangle({ left: 130, top: 130, width: 110, height: 100, fill: '#f97316' }); (o as any).data = { id: `triangle-${++idSeq}`, name: 'Triangle' }; c.add(o); c.setActiveObject(o); sync(); },
     addText: () => { const text = addText(); return (text as any).data.id as string; },
     addSelectedToTimeline,
+    addClipKeyframe: (clipId: string, atFrame: number) => {
+      const clip = useStore.getState().tracks.flatMap((track) => track.clips).find((item) => item.id === clipId);
+      if (!clip?.objectId || atFrame < clip.start || atFrame > clip.start + clip.len) return false;
+      const object: any = c.getObjects().find((item: any) => item.data?.id === clip.objectId);
+      if (!object) return false;
+      const transform: ClipTransform = {
+        left: object.left ?? 0, top: object.top ?? 0, scaleX: object.scaleX ?? 1,
+        scaleY: object.scaleY ?? 1, angle: object.angle ?? 0, opacity: object.opacity ?? 1,
+      };
+      useStore.getState().addClipKeyframe(clipId, Math.round(atFrame - clip.start), transform);
+      return true;
+    },
     autoLayoutSelected: (direction: 'row' | 'column' = 'row') => {
       const objs = c.getActiveObjects(); if (objs.length < 2) return false;
       const { pos } = computeAutoLayout(objs.map((o) => ({ w: o.getScaledWidth(), h: o.getScaledHeight() })), { direction, gap: 16, padding: 16, mode: 'hug' });

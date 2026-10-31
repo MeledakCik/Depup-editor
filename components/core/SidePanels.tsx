@@ -1,10 +1,18 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import type { Engine } from '@/lib/engine/fabric-engine';
-import { useStore, type ClipAnimation } from '@/lib/store';
+import { useStore, type ClipAnimation, type ClipEasing } from '@/lib/store';
 
 export type ExportKind = 'PNG' | 'JPG' | 'SVG' | 'PDF' | 'MP4 720p' | 'MP4 4K';
 const exportKinds: ExportKind[] = ['PNG', 'JPG', 'SVG', 'PDF', 'MP4 720p', 'MP4 4K'];
+const animationOptions: [ClipAnimation, string][] = [
+  ['none', 'Tanpa animasi'], ['fade', 'Fade'], ['slide-up', 'Masuk dari bawah / keluar ke atas'],
+  ['slide-down', 'Masuk dari atas / keluar ke bawah'], ['slide-left', 'Masuk dari kiri / keluar ke kanan'],
+  ['slide-right', 'Masuk dari kanan / keluar ke kiri'], ['zoom', 'Zoom'], ['pop', 'Pop'], ['rotate', 'Putar'],
+];
+const easingOptions: [ClipEasing, string][] = [
+  ['linear', 'Linear'], ['ease-in', 'Ease in'], ['ease-out', 'Ease out'], ['ease-in-out', 'Ease in-out'], ['back', 'Overshoot'],
+];
 type Props = { mode: 'design' | 'video'; eng: () => Engine | null; zoom: number; onExport: (kind: ExportKind) => void };
 const Row = ({ l, children }: { l: string; children: React.ReactNode }) => <label className="mb-2 block text-xs text-slate-400">{l}{children}</label>;
 const Section = ({ title, children, open = false }: { title: string; children: React.ReactNode; open?: boolean }) => <details open={open} className="border-b border-[#3a3a3a]">
@@ -30,13 +38,14 @@ const toDataURL = (file: File) => new Promise<string>((resolve, reject) => {
 });
 
 export default function SidePanels({ mode, eng, zoom, onExport }: Props) {
-  const videoTabs = ['Properti', 'Animasi', 'Warna', 'Keyframe', 'Caption', 'Stiker', 'Audio'];
+  const videoTabs = ['Klip', 'Properti', 'Animasi', 'Keyframe', 'Warna', 'Caption', 'Stiker', 'Audio'];
   const [inspectorTab, setInspectorTab] = useState<'design' | 'prototype'>('design');
-  const [tab, setTab] = useState(videoTabs[0]), [msg, setMsg] = useState(''), [name, setName] = useState('Tombol'), [time, setTime] = useState(0), [recording, setRecording] = useState(false), [hasAudio, setHasAudio] = useState(false), [audioPlaying, setAudioPlaying] = useState(false);
+  const [tab, setTab] = useState(videoTabs[0]), [msg, setMsg] = useState(''), [name, setName] = useState('Tombol'), [recording, setRecording] = useState(false), [hasAudio, setHasAudio] = useState(false), [audioPlaying, setAudioPlaying] = useState(false);
   const selection = useStore((s) => s.selection);
-  const tracks = useStore((s) => s.tracks), activeClipId = useStore((s) => s.activeClipId), updateClip = useStore((s) => s.updateClip);
+  const tracks = useStore((s) => s.tracks), activeClipId = useStore((s) => s.activeClipId), updateClip = useStore((s) => s.updateClip), currentFrame = useStore((s) => s.currentFrame);
   const activeClip = tracks.flatMap((track) => track.clips).find((clip) => clip.id === activeClipId) ?? null;
   const layers = useStore((s) => s.layers), prototypePreview = useStore((s) => s.prototypePreview);
+  const activeTrack = tracks.find((track) => track.clips.some((clip) => clip.id === activeClipId));
   const file = useRef<HTMLInputElement>(null), audio = useRef<HTMLInputElement>(null), wave = useRef<HTMLCanvasElement>(null);
   const recog = useRef<any>(null), audioContext = useRef<AudioContext | null>(null), audioBuffer = useRef<AudioBuffer | null>(null), source = useRef<AudioBufferSourceNode | null>(null), gain = useRef<GainNode | null>(null);
   useEffect(() => { setTab(videoTabs[0]); setInspectorTab('design'); setMsg(''); }, [mode]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -84,6 +93,23 @@ export default function SidePanels({ mode, eng, zoom, onExport }: Props) {
   const apply = (key: string, value: unknown) => void run((engine) => engine.setProp(key, value));
 
   const body: Record<string, React.ReactNode> = {
+    Klip: activeClip ? <div className="space-y-3">
+      <div className="rounded-md border border-slate-700 bg-[#1a1d22] p-2.5">
+        <div className="text-xs font-medium text-slate-100">Detail klip</div>
+        <div className="mt-1 text-[10px] capitalize text-slate-500">Track {activeTrack?.kind ?? '—'} · {(activeClip.len / 24).toFixed(2)} detik</div>
+      </div>
+      <Row l="Nama klip"><input className="btn w-full text-left" value={activeClip.label} onChange={(e) => updateClip(activeClip.id, { label: e.target.value })} /></Row>
+      <div className="grid grid-cols-2 gap-2">
+        <NumberField label="Mulai (detik)" min={0} step={0.05} value={+(activeClip.start / 24).toFixed(2)} on={(v) => updateClip(activeClip.id, { start: Math.max(0, Math.round(v * 24)) })} />
+        <NumberField label="Durasi (detik)" min={0.05} step={0.05} value={+(activeClip.len / 24).toFixed(2)} on={(v) => updateClip(activeClip.id, { len: Math.max(1, Math.round(v * 24)) })} />
+      </div>
+      <div className="grid grid-cols-2 gap-2"><button className="btn" onClick={() => useStore.getState().set({ currentFrame: activeClip.start, playing: false })}>Ke awal</button><button className="btn" onClick={() => useStore.getState().set({ currentFrame: activeClip.start + activeClip.len, playing: false })}>Ke akhir</button></div>
+      {activeClip.objectId && <button className="btn w-full" onClick={() => eng()?.selectLayer(activeClip.objectId!)}>Pilih objek di monitor</button>}
+      {activeClip.keyframes?.length ? <p className="text-[10px] text-slate-500">{activeClip.keyframes.length} keyframe · {(activeClip.keyframes[0].frame / 24).toFixed(2)}–{(activeClip.keyframes[activeClip.keyframes.length - 1].frame / 24).toFixed(2)} detik</p> : null}
+    </div> : <div className="space-y-3">
+      <p className="rounded-md border border-dashed border-slate-700 p-3 text-xs leading-5 text-slate-400">Pilih klip di timeline untuk mengubah nama, posisi waktu, dan durasinya.</p>
+      {selection && <button className="btn w-full" onClick={() => void run((engine) => engine.addSelectedToTimeline(), 'Pilih objek di monitor dulu.')}>Tambahkan objek terpilih ke timeline</button>}
+    </div>,
     Animasi: <div className="space-y-3">
       {!selection && !activeClip && <p className="rounded-md border border-dashed border-slate-700 p-3 text-xs leading-5 text-slate-400">Pilih teks atau gambar di monitor untuk menambahkan animasi.</p>}
       {selection && !activeClip && <>
@@ -96,16 +122,29 @@ export default function SidePanels({ mode, eng, zoom, onExport }: Props) {
           <div className="text-xs font-medium text-slate-100">{activeClip.label}</div>
           <div className="mt-1 text-[10px] text-slate-500">Mulai {(activeClip.start / 24).toFixed(2)}s · Durasi {(activeClip.len / 24).toFixed(2)}s</div>
         </div>
-        {activeClip.motionTemplate ? <p className="rounded-md border border-slate-700 bg-[#1a1d22] p-2 text-xs leading-5 text-slate-400">Template motion ini sudah memiliki animasi masuk dan keluar. Geser ujung klip di timeline untuk mengatur durasinya.</p> : <>
-          <Row l="Animasi masuk"><select className="btn mt-1 w-full" value={activeClip.inAnimation ?? 'fade'} onChange={(e) => updateClip(activeClip.id, { inAnimation: e.target.value as ClipAnimation })}>
-            <option value="none">Tanpa animasi</option><option value="fade">Fade</option><option value="slide-up">Geser dari bawah</option><option value="slide-left">Geser dari kiri</option><option value="zoom">Zoom</option>
+        {activeClip.motionTemplate && <p className="rounded-md border border-slate-700 bg-[#1a1d22] p-2 text-xs leading-5 text-slate-400">Animasi preset mengikuti kurva masuk dan keluar. Kurva easing di bawah mengatur akselerasi geraknya.</p>}
+        {!activeClip.motionTemplate && <>
+          <Row l="Animasi masuk"><select className="btn mt-1 w-full" value={activeClip.inAnimation ?? 'none'} onChange={(e) => updateClip(activeClip.id, { inAnimation: e.target.value as ClipAnimation })}>
+            {animationOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
           </select></Row>
-          <Row l="Animasi keluar"><select className="btn mt-1 w-full" value={activeClip.outAnimation ?? 'fade'} onChange={(e) => updateClip(activeClip.id, { outAnimation: e.target.value as ClipAnimation })}>
-            <option value="none">Tanpa animasi</option><option value="fade">Fade</option><option value="slide-up">Geser ke atas</option><option value="slide-left">Geser ke kanan</option><option value="zoom">Zoom</option>
+          <Row l="Animasi keluar"><select className="btn mt-1 w-full" value={activeClip.outAnimation ?? 'none'} onChange={(e) => updateClip(activeClip.id, { outAnimation: e.target.value as ClipAnimation })}>
+            {animationOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
           </select></Row>
           <Range l="Durasi transisi (detik)" min={0.1} max={Math.max(0.1, Math.min(1.5, activeClip.len / 48))} step={0.05} value={(activeClip.transitionFrames ?? 12) / 24} on={(v) => updateClip(activeClip.id, { transitionFrames: Math.max(1, Math.round(v * 24)) })} />
         </>}
-        <button className="btn w-full" onClick={() => useStore.getState().set({ currentFrame: activeClip.start, playing: false })}>Ke awal klip</button>
+        <Row l="Kurva gerak"><select className="btn mt-1 w-full" value={activeClip.easing ?? 'ease-in-out'} onChange={(e) => updateClip(activeClip.id, { easing: e.target.value as ClipEasing })}>
+          {easingOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+        </select></Row>
+        {!activeClip.motionTemplate && <div className="rounded-md border border-slate-700 bg-[#1a1d22] p-2.5">
+          <div className="flex items-center justify-between text-xs font-medium text-slate-100"><span>Keyframe gerak</span><span className="text-[10px] text-slate-500">{activeClip.keyframes?.length ?? 0} titik</span></div>
+          <p className="mt-1 text-[10px] leading-4 text-slate-500">Atur posisi, skala, rotasi, atau opasitas di monitor; rekam tiap pose pada playhead.</p>
+          <button className="btn mt-2 w-full" disabled={currentFrame < activeClip.start || currentFrame > activeClip.start + activeClip.len} onClick={() => void run((engine) => engine.addClipKeyframe(activeClip.id, currentFrame), 'Geser playhead ke dalam klip dulu.')}>Rekam pose di {(currentFrame / 24).toFixed(2)}s</button>
+          {!!activeClip.keyframes?.length && <div className="mt-2 space-y-1">{activeClip.keyframes.map((keyframe) => <div key={keyframe.frame} className="flex items-center gap-1 rounded bg-black/20 px-2 py-1 text-[10px] text-slate-400">
+            <button className="min-w-0 flex-1 text-left hover:text-white" onClick={() => useStore.getState().set({ currentFrame: activeClip.start + keyframe.frame, playing: false })}>◆ {(keyframe.frame / 24).toFixed(2)}s</button>
+            <button className="px-1 text-slate-500 hover:text-red-300" title="Hapus keyframe" onClick={() => updateClip(activeClip.id, { keyframes: activeClip.keyframes?.filter((item) => item.frame !== keyframe.frame) })}>×</button>
+          </div>)}</div>}
+        </div>}
+        <div className="grid grid-cols-2 gap-2"><button className="btn" onClick={() => useStore.getState().set({ currentFrame: activeClip.start, playing: false })}>Awal klip</button><button className="btn" onClick={() => useStore.getState().set({ currentFrame: activeClip.start + activeClip.len, playing: false })}>Akhir klip</button></div>
       </>}
     </div>,
     Prototype: <div className="space-y-3">
@@ -187,11 +226,12 @@ export default function SidePanels({ mode, eng, zoom, onExport }: Props) {
       ))}
       <label className="text-xs"><input type="checkbox" onChange={(e) => void run((engine) => engine.chromaKey(e.target.checked), 'Pilih gambar dulu.')} /> Green screen (chroma key)</label>
     </>,
-    Keyframe: <>
-      <Range l="Waktu (detik)" min={0} max={2} step={0.05} value={time} on={(v) => { setTime(v); void run((engine) => engine.applyAt(v)); }} />
-      <button className="btn" onClick={() => void run((engine) => engine.addKeyframe(time), 'Pilih objek dulu.')}>Tambah keyframe di {time}s</button>
-      <p className="mt-2 text-xs text-slate-500">Atur posisi, skala, atau opasitas lalu simpan keyframe pada waktu yang berbeda.</p>
-    </>,
+    Keyframe: activeClip?.motionTemplate ? <p className="rounded-md border border-slate-700 bg-[#1a1d22] p-3 text-xs leading-5 text-slate-400">Template motion memiliki keyframe bawaan. Atur durasi klip di tab Klip dan kurva geraknya di tab Animasi.</p> : activeClip?.objectId ? <div className="space-y-2">
+      <p className="text-xs leading-5 text-slate-400">Pindahkan playhead, ubah pose objek di monitor, lalu rekam keyframe. Posisi, skala, rotasi, dan opasitas akan dianimasikan di antara titik.</p>
+      <div className="rounded-md bg-[#1a1d22] p-2 text-xs text-slate-300">{activeClip.label}<span className="float-right font-mono text-cyan-300">{(currentFrame / 24).toFixed(2)}s</span></div>
+      <button className="btn w-full" disabled={currentFrame < activeClip.start || currentFrame > activeClip.start + activeClip.len} onClick={() => void run((engine) => engine.addClipKeyframe(activeClip.id, currentFrame), 'Playhead harus berada di dalam klip.')}>◆ Rekam keyframe</button>
+      <div className="space-y-1">{(activeClip.keyframes ?? []).map((keyframe) => <button key={keyframe.frame} className="btn flex w-full justify-between" onClick={() => useStore.getState().set({ currentFrame: activeClip.start + keyframe.frame, playing: false })}><span>Keyframe</span><span>{(keyframe.frame / 24).toFixed(2)}s</span></button>)}</div>
+    </div> : <p className="rounded-md border border-dashed border-slate-700 p-3 text-xs leading-5 text-slate-400">Pilih klip objek di timeline. Pindahkan playhead, ubah posenya di monitor, lalu rekam titik gerak.</p>,
     Caption: <><button className="btn" data-on={recording} onClick={caption}>{recording ? 'Berhenti' : 'Mulai auto caption'}</button><p className="mt-2 text-xs text-slate-500">Bahasa: Indonesia. Hasil muncul sebagai teks di kanvas.</p></>,
     Stiker: <div className="flex flex-wrap gap-1">{['🔥', '⭐', '💥', '❤️', '😂', '🎉'].map((s) => <button key={s} className="btn text-lg" onClick={() => void run((engine) => engine.addSticker(s))}>{s}</button>)}</div>,
     Audio: <>
@@ -234,7 +274,7 @@ export default function SidePanels({ mode, eng, zoom, onExport }: Props) {
           <Section title="Export"><div className="grid grid-cols-2 gap-1.5">{exportKinds.map((kind) => <button key={kind} className="btn" onClick={() => onExport(kind)}>{kind}</button>)}</div></Section>
         </>}
       </> : <>
-        <div className="mb-2 flex flex-wrap gap-1">{videoTabs.map((x) => <button key={x} className="btn" data-on={tab === x} onClick={() => setTab(x)}>{x}</button>)}</div>
+        <div className="mb-2 flex gap-1 overflow-x-auto pb-1">{videoTabs.map((x) => <button key={x} className="btn shrink-0 px-2" data-on={tab === x} onClick={() => setTab(x)}>{x}</button>)}</div>
         {body[tab]}
         <Section title="Export"><div className="grid grid-cols-2 gap-1.5">{exportKinds.map((kind) => <button key={kind} className="btn" onClick={() => onExport(kind)}>{kind}</button>)}</div></Section>
       </>}
